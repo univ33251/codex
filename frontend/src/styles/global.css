@@ -1,0 +1,141 @@
+:root {
+  font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  color: #111;
+  background-color: #f7f7f7;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  overscroll-behavior: contain;
+  touch-action: manipulation;
+}
+
+body {
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  font: inherit;
+}
+
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.app-main {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+
+.canvas-container {
+  flex: 1;
+  background: #111;
+  position: relative;
+  touch-action: none;
+}
+
+.sidebar {
+  width: 320px;
+  max-width: 35vw;
+  border-left: 1px solid rgba(0,0,0,0.1);
+  background: #fff;
+  overflow-y: auto;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  background: #fff;
+  border-bottom: 1px solid rgba(0,0,0,0.1);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.toolbar .spacer {
+  flex: 1;
+}
+
+.layer-panel {
+  padding: 12px;
+}
+
+.layer-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(0,0,0,0.05);
+}
+
+.shape-list {
+  padding: 0 12px 24px 12px;
+}
+
+.shape-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(0,0,0,0.04);
+  font-size: 14px;
+}
+
+.palette {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.palette button {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  background: transparent;
+  padding: 0;
+}
+
+.palette button.active {
+  border-color: #007aff;
+}
+
+.palette button span {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+}
+
+.control-button {
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(0,0,0,0.1);
+  background: #fafafa;
+  cursor: pointer;
+}
+
+.control-button:active {
+  background: #e5e5ea;
+}
+
+.layer-dropdown {
+  min-width: 200px;
+}
+
+.layer-dropdown select {
+  width: 100%;
+  padding: 6px;
+}
