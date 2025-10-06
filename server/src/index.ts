@@ -8,6 +8,17 @@ import { createImageRouter } from './routes/images';
 import { createAnnotationRouter } from './routes/annotations';
 import { attachAuth } from './middleware/auth';
 import { logger } from './utils/logger';
+import fs from "fs";
+console.log("CWD=", process.cwd());
+console.log("IMAGE_ROOT(.env)=", process.env.IMAGE_ROOT);
+console.log("IMAGE_EXTS(.env)=", process.env.IMAGE_EXTS);
+
+try {
+  const files = fs.readdirSync(process.env.IMAGE_ROOT || "");
+  console.log("readdir(IMAGE_ROOT) =>", files);
+} catch (e) {
+  console.error("readdir failed:", e);
+}
 
 const PORT = Number(process.env.PORT ?? 4000);
 const IMAGE_ROOT = process.env.IMAGE_ROOT ?? path.resolve(process.cwd(), 'mock-data/images');

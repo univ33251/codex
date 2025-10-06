@@ -1,0 +1,20 @@
+{
+  "image_id": "ash_de_image_1.jpg",
+  "image_size": {
+    "w": 256,
+    "h": 256
+  },
+  "layers": [
+    {
+      "id": "layer-1759792262808",
+      "name": "Layer 2",
+      "visible": true,
+      "z": 2,
+      "shapes": []
+    }
+  ],
+  "meta": {
+    "device": "iPadOS",
+    "revision": 1
+  }
+}
