@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import axios from 'axios';
 import { useAnnotationStore } from './hooks/useAnnotationStore';
-import { AnnotationDocument, AnnotationLayer, ImageSummary } from './types/annotations';
+import {
+  AnnotationDocument,
+  AnnotationLayer,
+  AnnotationShape,
+  ImageSummary,
+  NormalizedPoint,
+} from './types/annotations';
 import CanvasStage from './components/CanvasStage';
 import LayerPanel from './components/LayerPanel';
 import ColorPalette from './components/ColorPalette';
@@ -9,6 +15,84 @@ import ImagePager from './components/ImagePager';
 import ShapeList from './components/ShapeList';
 
 const AUTOSAVE_INTERVAL = 15000;
+const FREEHAND_SAMPLES = 36;
+
+const clamp01 = (value: number) => Math.max(0, Math.min(1, value));
+
+const generateShapeId = () => `ann-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+const convertCircleToFreehand = (
+  shape: any,
+  docSize: { w: number; h: number }
+): AnnotationShape => {
+  const centerX = clamp01(Number(shape?.center?.x) || 0.5);
+  const centerY = clamp01(Number(shape?.center?.y) || 0.5);
+  const radiusNorm = typeof shape?.radius === 'number' ? shape.radius : 0.05;
+  const radiusPx = radiusNorm * docSize.w;
+  const points: NormalizedPoint[] = [];
+  for (let i = 0; i < FREEHAND_SAMPLES; i += 1) {
+    const angle = (2 * Math.PI * i) / FREEHAND_SAMPLES;
+    const px = centerX * docSize.w + Math.cos(angle) * radiusPx;
+    const py = centerY * docSize.h + Math.sin(angle) * radiusPx;
+    points.push({
+      x: clamp01(px / docSize.w),
+      y: clamp01(py / docSize.h),
+    });
+  }
+  const createdAt = shape?.created_at ?? new Date().toISOString();
+  return {
+    id: shape?.id ?? generateShapeId(),
+    type: 'freehand',
+    points,
+    color: shape?.color ?? '#FF3B30',
+    label: shape?.label ?? null,
+    created_at: createdAt,
+    updated_at: shape?.updated_at ?? createdAt,
+    closed: true,
+  };
+};
+
+const ensureFreehandShape = (
+  shape: any,
+  docSize: { w: number; h: number }
+): AnnotationShape => {
+  if (shape?.type === 'freehand' && Array.isArray(shape.points)) {
+    const sanitized = (shape.points as any[])
+      .map((pt) => ({
+        x: clamp01(Number(pt?.x) || 0),
+        y: clamp01(Number(pt?.y) || 0),
+      }))
+      .filter((pt, idx, arr) => idx === 0 || pt.x !== arr[idx - 1].x || pt.y !== arr[idx - 1].y);
+    if (sanitized.length >= 2) {
+      const createdAt = shape?.created_at ?? new Date().toISOString();
+      return {
+        id: shape?.id ?? generateShapeId(),
+        type: 'freehand',
+        points: sanitized,
+        color: shape?.color ?? '#FF3B30',
+        label: shape?.label ?? null,
+        created_at: createdAt,
+        updated_at: shape?.updated_at ?? createdAt,
+        closed: shape?.closed !== false,
+      };
+    }
+  }
+  return convertCircleToFreehand(shape, docSize);
+};
+
+const upgradeDocument = (image: ImageSummary, doc: AnnotationDocument): AnnotationDocument => {
+  const size = doc.image_size ?? { w: image.width, h: image.height };
+  const layers = doc.layers.map((layer, index) => {
+    const incomingLayer = layer as AnnotationLayer & { shapes: any[] };
+    return {
+      ...incomingLayer,
+      visible: incomingLayer.visible ?? true,
+      z: incomingLayer.z ?? index + 1,
+      shapes: (incomingLayer.shapes ?? []).map((shape: any) => ensureFreehandShape(shape, size)),
+    };
+  });
+  return { ...doc, image_size: size, layers };
+};
 
 const defaultDocument = (image: ImageSummary): AnnotationDocument => ({
   image_id: image.id,
@@ -33,6 +117,10 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const autosaveTimer = useRef<number>();
+  const toastTimer = useRef<number | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
+  const [infoPanelOpen, setInfoPanelOpen] = useState(true);
+  const [resetViewportKey, setResetViewportKey] = useState(0);
 
   useEffect(() => {
     let mounted = true;
@@ -53,7 +141,7 @@ function App() {
         if (mounted) setLoading(false);
       }
     };
-    fetchImages();
+    void fetchImages();
     return () => {
       mounted = false;
     };
@@ -76,11 +164,20 @@ function App() {
   }, [store.document, store.isDirty]);
 
   useEffect(() => {
-    // 一覧はあるのにdocumentがまだ無い場合の保険
-    if (!store.document && store.images.length > 0) {
-      void loadDocumentForIndex(store.currentImageIndex || 0);
+    return () => {
+      if (toastTimer.current) {
+        window.clearTimeout(toastTimer.current);
+      }
+    };
+  }, []);
+
+  const showToast = (message: string) => {
+    setToast(message);
+    if (toastTimer.current) {
+      window.clearTimeout(toastTimer.current);
     }
-  }, [store.images]);
+    toastTimer.current = window.setTimeout(() => setToast(null), 3000);
+  };
 
   const loadDocumentForIndex = async (index: number) => {
     const image = store.images[index];
@@ -89,7 +186,7 @@ function App() {
     try {
       store.setCurrentImageIndex(index);
       const res = await axios.get<AnnotationDocument | null>(`/api/annotations/${image.id}`);
-      const doc = res.data ?? defaultDocument(image);
+      const doc = upgradeDocument(image, res.data ?? defaultDocument(image));
       store.setDocument(doc);
       store.selectShape(doc.layers[0]?.id ?? null, null);
       store.markDirty(false);
@@ -97,12 +194,7 @@ function App() {
       await prefetchImage(image.id);
     } catch (err) {
       console.error(err);
-      // フォールバック: 注釈が読めなくても空ドキュメントで開く
-      store.setCurrentImageIndex(index);
-      const doc = defaultDocument(image);
-      store.setDocument(doc);
-      store.selectShape(doc.layers[0]?.id ?? null, null);
-      store.markDirty(false);
+      setError('アノテーションデータの読み込みに失敗しました');
     } finally {
       setLoading(false);
     }
@@ -112,6 +204,9 @@ function App() {
     try {
       const target = isAutosave ? `/api/annotations/${doc.image_id}/autosave` : `/api/annotations/${doc.image_id}`;
       await axios.post(target, doc);
+      if (!isAutosave) {
+        showToast('保存しました');
+      }
       store.markDirty(false);
     } catch (err) {
       console.error(err);
@@ -124,7 +219,7 @@ function App() {
   const prefetchImage = async (imageId: string) => {
     try {
       const img = new Image();
-      img.src = `/api/images/${encodeURIComponent(imageId)}`;
+      img.src = `/api/images/${imageId}`;
       await img.decode().catch(() => undefined);
     } catch (err) {
       console.warn('prefetch failed', err);
@@ -152,7 +247,10 @@ function App() {
     }
   };
 
-  const currentImage = useMemo(() => store.images[store.currentImageIndex], [store.images, store.currentImageIndex]);
+  const currentImage = useMemo(
+    () => store.images[store.currentImageIndex],
+    [store.images, store.currentImageIndex]
+  );
 
   const currentLayer: AnnotationLayer | undefined = useMemo(() => {
     if (!store.document) return undefined;
@@ -174,40 +272,100 @@ function App() {
   return (
     <div className="app-shell">
       <div className="toolbar" role="toolbar">
-        <div>
-          {store.currentImageIndex + 1}/{store.images.length} : {currentImage.name}
+        <div className="toolbar-row">
+          <div className="toolbar-group">
+            <span>
+              {store.currentImageIndex + 1}/{store.images.length} : {currentImage.name}
+            </span>
+          </div>
+          <div className="toolbar-group pager-group">
+            <ImagePager
+              onPrev={onPrev}
+              onNext={onNext}
+              hasPrev={store.currentImageIndex > 0}
+              hasNext={store.currentImageIndex < store.images.length - 1}
+            />
+          </div>
         </div>
-        <ColorPalette
-          colors={store.palette}
-          selectedColor={store.drawingColor}
-          onColorChange={(color) => store.setDrawingColor(color)}
-          onPaletteChange={store.setPalette}
-        />
-        <div className="layer-dropdown">
-          <LayerSelect
-            layers={store.document.layers}
-            selectedLayerId={currentLayer?.id ?? null}
-            onSelect={(layerId) => store.selectShape(layerId, null)}
-            onCreate={() => {
-              const newLayer: AnnotationLayer = {
-                id: `layer-${Date.now()}`,
-                name: `Layer ${store.document.layers.length + 1}`,
-                visible: true,
-                z: store.document.layers.length + 1,
-                shapes: [],
-              };
-              store.addLayer(newLayer);
-            }}
-          />
+        <div className="toolbar-row wrap">
+          <div className="toolbar-group">
+            <ColorPalette
+              colors={store.palette}
+              selectedColor={store.drawingColor}
+              onColorChange={(color) => store.setDrawingColor(color)}
+              onPaletteChange={store.setPalette}
+            />
+          </div>
+          <div className="toolbar-group">
+            <label className="layer-select">
+              <span>アクティブレイヤー</span>
+              <select
+                value={currentLayer?.id ?? ''}
+                onChange={(e) => store.selectShape(e.target.value, null)}
+              >
+                {store.document.layers.map((layer) => (
+                  <option key={layer.id} value={layer.id}>
+                    {layer.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button
+              className="control-button"
+              onClick={() => {
+                const newLayer: AnnotationLayer = {
+                  id: `layer-${Date.now()}`,
+                  name: `Layer ${store.document.layers.length + 1}`,
+                  visible: true,
+                  z: store.document.layers.length + 1,
+                  shapes: [],
+                };
+                store.addLayer(newLayer);
+              }}
+            >
+              レイヤー追加
+            </button>
+          </div>
+          <div className="toolbar-group">
+            <button
+              className={`control-button ${store.tool === 'draw' ? 'active' : ''}`}
+              onClick={() => store.setTool('draw')}
+            >
+              描画
+            </button>
+            <button
+              className={`control-button ${store.tool === 'select' ? 'active' : ''}`}
+              onClick={() => store.setTool('select')}
+            >
+              選択
+            </button>
+            <button
+              className={`control-button ${store.tool === 'pan' ? 'active' : ''}`}
+              onClick={() => store.setTool('pan')}
+            >
+              パン
+            </button>
+          </div>
+          <div className="toolbar-group">
+            <button className="control-button" onClick={() => store.undo()} disabled={!store.canUndo}>
+              Undo
+            </button>
+            <button className="control-button" onClick={() => store.redo()} disabled={!store.canRedo}>
+              Redo
+            </button>
+            <button className="control-button" onClick={() => setResetViewportKey((v) => v + 1)}>
+              ズームリセット
+            </button>
+            <button className="control-button" onClick={() => saveDocument(store.document!)}>
+              保存
+            </button>
+            <button className="control-button" onClick={() => setInfoPanelOpen((v) => !v)}>
+              {infoPanelOpen ? '情報パネルを閉じる' : '情報パネルを開く'}
+            </button>
+          </div>
         </div>
-        <button className="control-button" onClick={() => store.setTool('draw')}>描画</button>
-        <button className="control-button" onClick={() => store.setTool('select')}>選択</button>
-        <button className="control-button" onClick={() => store.setTool('pan')}>パン</button>
-        <button className="control-button" onClick={() => saveDocument(store.document!)}>保存</button>
-        <div className="spacer" />
-        <ImagePager onPrev={onPrev} onNext={onNext} hasPrev={store.currentImageIndex > 0} hasNext={store.currentImageIndex < store.images.length - 1} />
       </div>
-      <div className="app-main">
+      <div className="workspace">
         <div className="canvas-container">
           <CanvasStage
             key={store.document.image_id}
@@ -217,83 +375,48 @@ function App() {
             activeLayerId={currentLayer?.id ?? null}
             drawingColor={store.drawingColor}
             tool={store.tool}
+            selectedLayerId={store.selectedLayerId}
+            selectedShapeId={store.selectedShapeId}
+            resetViewportKey={resetViewportKey}
             onAddShape={(layerId, shape) => store.addShape(layerId, shape)}
             onUpdateShape={(layerId, shape) => store.updateShape(layerId, shape)}
             onSelect={(layerId, shapeId) => store.selectShape(layerId, shapeId)}
             onDeleteShape={(layerId, shapeId) => store.deleteShape(layerId, shapeId)}
+            onShapeRejected={showToast}
           />
+          {toast && <div className="toast">{toast}</div>}
         </div>
-        <aside className="sidebar">
-          <LayerPanel
-            layers={store.document.layers}
-            selectedLayerId={currentLayer?.id ?? null}
-            onToggleVisibility={(layerId) => {
-              const layer = store.document.layers.find((l) => l.id === layerId);
-              if (!layer) return;
-              store.updateLayer({ ...layer, visible: !layer.visible });
-            }}
-            onToggleLock={(layerId) => {
-              const layer = store.document.layers.find((l) => l.id === layerId);
-              if (!layer) return;
-              store.updateLayer({ ...layer, locked: !layer.locked });
-            }}
-            onRename={(layerId, name) => {
-              const layer = store.document.layers.find((l) => l.id === layerId);
-              if (!layer) return;
-              store.updateLayer({ ...layer, name });
-            }}
-            onDelete={(layerId) => store.removeLayer(layerId)}
-          />
-          <ShapeList
-            layers={store.document.layers}
-            selectedLayerId={currentLayer?.id ?? null}
-            selectedShapeId={store.selectedShapeId}
-            onSelect={(layerId, shapeId) => store.selectShape(layerId, shapeId)}
-          />
-        </aside>
-      </div>
-    </div>
-  );
-}
-
-function LayerSelect({
-  layers,
-  selectedLayerId,
-  onSelect,
-  onCreate,
-}: {
-  layers: AnnotationLayer[];
-  selectedLayerId: string | null;
-  onSelect: (layerId: string) => void;
-  onCreate: () => void;
-}) {
-  const [dropdownOpen, setDropdownOpen] = useState(false);
-  return (
-    <div>
-      <button className="control-button" onClick={() => setDropdownOpen((v) => !v)}>
-        レイヤー
-      </button>
-      {dropdownOpen && (
-        <div className="layer-panel" style={{ position: 'absolute', background: '#fff', boxShadow: '0 4px 12px rgba(0,0,0,0.15)', borderRadius: 12 }}>
-          <div style={{ marginBottom: 8 }}>
-            <button className="control-button" onClick={() => onCreate()}>レイヤー追加</button>
+        {infoPanelOpen && (
+          <div className="info-panel">
+            <LayerPanel
+              layers={store.document.layers}
+              selectedLayerId={currentLayer?.id ?? null}
+              onToggleVisibility={(layerId) => {
+                const layer = store.document.layers.find((l) => l.id === layerId);
+                if (!layer) return;
+                store.updateLayer({ ...layer, visible: !layer.visible });
+              }}
+              onToggleLock={(layerId) => {
+                const layer = store.document.layers.find((l) => l.id === layerId);
+                if (!layer) return;
+                store.updateLayer({ ...layer, locked: !layer.locked });
+              }}
+              onRename={(layerId, name) => {
+                const layer = store.document.layers.find((l) => l.id === layerId);
+                if (!layer) return;
+                store.updateLayer({ ...layer, name });
+              }}
+              onDelete={(layerId) => store.removeLayer(layerId)}
+            />
+            <ShapeList
+              layers={store.document.layers}
+              selectedLayerId={store.selectedLayerId}
+              selectedShapeId={store.selectedShapeId}
+              onSelect={(layerId, shapeId) => store.selectShape(layerId, shapeId)}
+            />
           </div>
-          {layers.map((layer) => (
-            <div key={layer.id} className="layer-item">
-              <button
-                className="control-button"
-                style={{ background: layer.id === selectedLayerId ? '#d1eaff' : '#f0f0f0' }}
-                onClick={() => {
-                  onSelect(layer.id);
-                  setDropdownOpen(false);
-                }}
-              >
-                {layer.name}
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }

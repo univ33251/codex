@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
 import morgan from 'morgan';
+import os from 'os';
 import path from 'path';
 import { createFsAdapter } from './adapters/fsAdapter';
 import { AnnotationService } from './services/annotationService';
@@ -8,26 +9,33 @@ import { createImageRouter } from './routes/images';
 import { createAnnotationRouter } from './routes/annotations';
 import { attachAuth } from './middleware/auth';
 import { logger } from './utils/logger';
-import fs from "fs";
-console.log("CWD=", process.cwd());
-console.log("IMAGE_ROOT(.env)=", process.env.IMAGE_ROOT);
-console.log("IMAGE_EXTS(.env)=", process.env.IMAGE_EXTS);
 
-try {
-  const files = fs.readdirSync(process.env.IMAGE_ROOT || "");
-  console.log("readdir(IMAGE_ROOT) =>", files);
-} catch (e) {
-  console.error("readdir failed:", e);
-}
+const resolveUserPath = (inputPath: string) => {
+  if (inputPath.startsWith('~/')) {
+    return path.join(os.homedir(), inputPath.slice(2));
+  }
+  if (path.isAbsolute(inputPath)) {
+    return inputPath;
+  }
+  return path.resolve(process.cwd(), inputPath);
+};
 
 const PORT = Number(process.env.PORT ?? 4000);
-const IMAGE_ROOT = process.env.IMAGE_ROOT ?? path.resolve(process.cwd(), 'mock-data/images');
-const ANNOTATION_ROOT = process.env.ANNOTATION_ROOT ?? path.resolve(process.cwd(), 'mock-data/annotations');
+const IMAGE_ROOT = resolveUserPath(process.env.IMAGE_ROOT ?? path.resolve(process.cwd(), 'mock-data/images'));
+const ANNOTATION_ROOT = resolveUserPath(
+  process.env.ANNOTATION_ROOT ?? path.resolve(process.cwd(), 'mock-data/annotations')
+);
+const IMAGE_EXTENSIONS = process.env.IMAGE_EXTENSIONS?.split(',').map((ext) => ext.trim()).filter(Boolean);
 const READ_ONLY = process.env.READ_ONLY === 'true';
 
 async function bootstrap() {
   const app = express();
-  const adapter = createFsAdapter({ imageRoot: IMAGE_ROOT, annotationRoot: ANNOTATION_ROOT, readOnly: READ_ONLY });
+  const adapter = createFsAdapter({
+    imageRoot: IMAGE_ROOT,
+    annotationRoot: ANNOTATION_ROOT,
+    readOnly: READ_ONLY,
+    imageExtensions: IMAGE_EXTENSIONS,
+  });
   await adapter.ensureReady();
   const service = new AnnotationService(adapter);
 

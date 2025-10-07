@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Stage, Layer as KonvaLayer, Circle, Image as KonvaImage } from 'react-konva';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Stage, Layer as KonvaLayer, Line, Image as KonvaImage } from 'react-konva';
 import type Konva from 'konva';
-import { AnnotationCircle, AnnotationLayer } from '../types/annotations';
+import { AnnotationLayer, AnnotationShape, NormalizedPoint } from '../types/annotations';
 import { ToolMode } from '../hooks/useAnnotationStore';
 
 interface CanvasStageProps {
@@ -11,10 +11,14 @@ interface CanvasStageProps {
   activeLayerId: string | null;
   drawingColor: string;
   tool: ToolMode;
-  onAddShape: (layerId: string, shape: AnnotationCircle) => void;
-  onUpdateShape: (layerId: string, shape: AnnotationCircle) => void;
+  selectedLayerId: string | null;
+  selectedShapeId: string | null;
+  resetViewportKey: number;
+  onAddShape: (layerId: string, shape: AnnotationShape) => void;
+  onUpdateShape: (layerId: string, shape: AnnotationShape) => void;
   onSelect: (layerId: string | null, shapeId: string | null) => void;
   onDeleteShape: (layerId: string, shapeId: string) => void;
+  onShapeRejected?: (reason: string) => void;
 }
 
 const CanvasStage = ({
@@ -24,32 +28,58 @@ const CanvasStage = ({
   activeLayerId,
   drawingColor,
   tool,
+  selectedLayerId,
+  selectedShapeId,
+  resetViewportKey,
   onAddShape,
   onUpdateShape,
   onSelect,
   onDeleteShape,
+  onShapeRejected,
 }: CanvasStageProps) => {
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
   const stageRef = useRef<Konva.Stage>(null);
   const [stageScale, setStageScale] = useState(1);
   const [stagePosition, setStagePosition] = useState({ x: 0, y: 0 });
+  const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
   const [imageNode, setImageNode] = useState<HTMLImageElement | null>(null);
-  const [draftCircle, setDraftCircle] = useState<{ start: { x: number; y: number }; current: { x: number; y: number } } | null>(null);
-  const [selected, setSelected] = useState<{ layerId: string; shapeId: string } | null>(null);
+  const [draftPath, setDraftPath] = useState<{ points: { x: number; y: number }[] } | null>(null);
+  const [isGesturePan, setIsGesturePan] = useState(false);
 
   useEffect(() => {
-    onSelect(selected?.layerId ?? null, selected?.shapeId ?? null);
-  }, [selected]);
+    if (!wrapperRef.current) return;
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+      const { width, height } = entry.contentRect;
+      setContainerSize({ width, height });
+    });
+    observer.observe(wrapperRef.current);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (!containerSize.width || !containerSize.height) return;
+    const scale = Math.min(
+      containerSize.width / imageSize.w,
+      containerSize.height / imageSize.h
+    );
+    setStageScale(scale);
+    setStagePosition({
+      x: (containerSize.width - imageSize.w * scale) / 2,
+      y: (containerSize.height - imageSize.h * scale) / 2,
+    });
+  }, [containerSize, imageSize, resetViewportKey]);
 
   useEffect(() => {
     const img = new window.Image();
     img.crossOrigin = 'anonymous';
-    img.src = `/api/images/${encodeURIComponent(imageId)}`;
+    img.src = `/api/images/${imageId}`;
     img.onload = () => setImageNode(img);
   }, [imageId]);
 
   useEffect(() => {
-    setSelected(null);
-    setDraftCircle(null);
+    setDraftPath(null);
   }, [imageId]);
 
   const handleWheel = useCallback((e: Konva.KonvaEventObject<WheelEvent>) => {
@@ -66,10 +96,11 @@ const CanvasStage = ({
       x: (pointer.x - stage.x()) / oldScale,
       y: (pointer.y - stage.y()) / oldScale,
     };
-    setStageScale(newScale);
+    const nextScale = Math.max(0.05, Math.min(newScale, 8));
+    setStageScale(nextScale);
     const newPos = {
-      x: pointer.x - mousePointTo.x * newScale,
-      y: pointer.y - mousePointTo.y * newScale,
+      x: pointer.x - mousePointTo.x * nextScale,
+      y: pointer.y - mousePointTo.y * nextScale,
     };
     setStagePosition(newPos);
   }, [stageScale]);
@@ -83,98 +114,159 @@ const CanvasStage = ({
     };
   }, [handleWheel]);
 
-  const size = useMemo(() => {
-    const ratio = imageSize.w / imageSize.h;
-    const container = stageRef.current?.container();
-    const width = container?.clientWidth ?? window.innerWidth;
-    const height = container?.clientHeight ?? window.innerHeight;
-    const stageWidth = width;
-    const stageHeight = width / ratio;
-    if (stageHeight > height) {
-      return { width: height * ratio, height };
-    }
-    return { width: stageWidth, height: stageHeight };
-  }, [imageSize, stageScale, stagePosition]);
+  const normalize = useCallback(
+    (point: { x: number; y: number }): NormalizedPoint => ({
+      x: Math.max(0, Math.min(1, point.x / imageSize.w)),
+      y: Math.max(0, Math.min(1, point.y / imageSize.h)),
+    }),
+    [imageSize]
+  );
 
-  const normalize = useCallback((point: { x: number; y: number }) => ({
-    x: Math.max(0, Math.min(1, point.x / imageSize.w)),
-    y: Math.max(0, Math.min(1, point.y / imageSize.h)),
-  }), [imageSize]);
+  const denormalize = useCallback(
+    (point: NormalizedPoint) => ({
+      x: point.x * imageSize.w,
+      y: point.y * imageSize.h,
+    }),
+    [imageSize]
+  );
 
-  const denormalize = useCallback((point: { x: number; y: number }) => ({
-    x: point.x * imageSize.w,
-    y: point.y * imageSize.h,
-  }), [imageSize]);
+  const toImageCoords = useCallback(
+    (stagePoint: { x: number; y: number }) => {
+      return {
+        x: (stagePoint.x - stagePosition.x) / stageScale,
+        y: (stagePoint.y - stagePosition.y) / stageScale,
+      };
+    },
+    [stagePosition, stageScale]
+  );
 
-  const toImageCoords = (stagePoint: { x: number; y: number }) => {
-    return {
-      x: (stagePoint.x - stagePosition.x) / stageScale,
-      y: (stagePoint.y - stagePosition.y) / stageScale,
-    };
+  const clampToImage = useCallback(
+    (point: { x: number; y: number }) => ({
+      x: Math.max(0, Math.min(imageSize.w, point.x)),
+      y: Math.max(0, Math.min(imageSize.h, point.y)),
+    }),
+    [imageSize]
+  );
+
+  const getActiveLayer = () => {
+    if (!layers.length) return undefined;
+    const layer = layers.find((l) => l.id === (activeLayerId ?? selectedLayerId ?? l.id));
+    return layer ?? layers[0];
   };
 
   const handlePointerDown = (evt: Konva.KonvaEventObject<PointerEvent>) => {
+    evt.evt.preventDefault();
     const pointerType = evt.evt.pointerType;
     if (pointerType === 'touch' && evt.evt.touches && evt.evt.touches.length > 1) {
+      setIsGesturePan(true);
       return;
     }
     const stage = stageRef.current;
     const pointer = stage?.getPointerPosition();
     if (!pointer) return;
     if (tool === 'draw') {
-      const pos = toImageCoords(pointer);
-      setDraftCircle({ start: pos, current: pos });
+      const activeLayer = getActiveLayer();
+      if (!activeLayer) return;
+      if (activeLayer.locked) {
+        onShapeRejected?.('ロックされたレイヤーには描画できません');
+        return;
+      }
+      onSelect(activeLayer.id, null);
+      const pos = clampToImage(toImageCoords(pointer));
+      setDraftPath({ points: [pos] });
     } else if (tool === 'select') {
-      setSelected(null);
+      if (evt.target === stage) {
+        onSelect(null, null);
+      }
     }
   };
 
-  const handlePointerMove = (_evt: Konva.KonvaEventObject<PointerEvent>) => {
-    if (!draftCircle) return;
+  const handlePointerMove = (evt: Konva.KonvaEventObject<PointerEvent>) => {
+    if (!draftPath) return;
     const stage = stageRef.current;
     const pointer = stage?.getPointerPosition();
     if (!pointer) return;
-    const pos = toImageCoords(pointer);
-    setDraftCircle((prev) => (prev ? { ...prev, current: pos } : prev));
+    const pos = clampToImage(toImageCoords(pointer));
+    setDraftPath((prev) => {
+      if (!prev) return prev;
+      const lastPoint = prev.points[prev.points.length - 1];
+      const distance = Math.hypot(pos.x - lastPoint.x, pos.y - lastPoint.y);
+      if (distance < MIN_POINT_DISTANCE) {
+        return prev;
+      }
+      return { points: [...prev.points, pos] };
+    });
   };
 
-  const handlePointerUp = () => {
-    if (!draftCircle) return;
-    const layerId = activeLayerId ?? layers[0]?.id;
-    if (!layerId) {
-      setDraftCircle(null);
+  const polygonArea = (points: NormalizedPoint[]) => {
+    if (points.length < 3) return 0;
+    let area = 0;
+    for (let i = 0; i < points.length; i += 1) {
+      const current = points[i];
+      const next = points[(i + 1) % points.length];
+      area += current.x * next.y - next.x * current.y;
+    }
+    return Math.abs(area) / 2;
+  };
+
+  const finalizeDraft = () => {
+    if (!draftPath) return;
+    const layer = getActiveLayer();
+    if (!layer) {
+      setDraftPath(null);
       return;
     }
-    const dx = draftCircle.current.x - draftCircle.start.x;
-    const dy = draftCircle.current.y - draftCircle.start.y;
-    const radius = Math.sqrt(dx * dx + dy * dy);
-    if (radius < 5) {
-      setDraftCircle(null);
+    const points = draftPath.points;
+    if (points.length < 3) {
+      setDraftPath(null);
+      return;
+    }
+    const first = points[0];
+    const last = points[points.length - 1];
+    const distance = Math.hypot(last.x - first.x, last.y - first.y);
+    if (distance > CLOSE_THRESHOLD) {
+      setDraftPath(null);
+      onShapeRejected?.('始点と終点が閉じていないため図形を作成できませんでした');
+      return;
+    }
+    const normalizedPoints = points.map(normalize);
+    const area = polygonArea(normalizedPoints);
+    if (area < MIN_POLYGON_AREA) {
+      setDraftPath(null);
+      onShapeRejected?.('囲まれた面積が小さすぎるため無効化しました');
       return;
     }
     const now = new Date().toISOString();
-    const normalizedCenter = normalize(draftCircle.start);
-    const normalizedRadius = radius / imageSize.w;
-    const shape: AnnotationCircle = {
+    const shape: AnnotationShape = {
       id: `ann-${Date.now()}`,
-      type: 'circle',
-      center: normalizedCenter,
-      radius: normalizedRadius,
+      type: 'freehand',
+      points: normalizedPoints,
       color: drawingColor,
       label: null,
       created_at: now,
       updated_at: now,
+      closed: true,
     };
-    onAddShape(layerId, shape);
-    setSelected({ layerId, shapeId: shape.id });
-    setDraftCircle(null);
+    onAddShape(layer.id, shape);
+    onSelect(layer.id, shape.id);
+    setDraftPath(null);
   };
 
-  const handleDeleteSelected = () => {
-    if (!selected) return;
-    onDeleteShape(selected.layerId, selected.shapeId);
-    setSelected(null);
+  const handlePointerUp = () => {
+    setIsGesturePan(false);
+    finalizeDraft();
   };
+
+  const handlePointerCancel = () => {
+    setIsGesturePan(false);
+    setDraftPath(null);
+  };
+
+  const handleDeleteSelected = useCallback(() => {
+    if (!selectedLayerId || !selectedShapeId) return;
+    onDeleteShape(selectedLayerId, selectedShapeId);
+    onSelect(selectedLayerId, null);
+  }, [onDeleteShape, onSelect, selectedLayerId, selectedShapeId]);
 
   useEffect(() => {
     const handler = (ev: KeyboardEvent) => {
@@ -188,57 +280,53 @@ const CanvasStage = ({
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [selected]);
+  }, [handleDeleteSelected]);
 
-  const renderLayers = () => {
-    return layers
+  const renderLayers = () =>
+    layers
       .filter((layer) => layer.visible !== false)
       .map((layer) => (
         <KonvaLayer key={layer.id} listening={tool !== 'pan'}>
           {layer.shapes.map((shape) => {
-            const center = denormalize(shape.center);
-            const radius = shape.radius * imageSize.w;
-            const isActive = selected?.shapeId === shape.id;
+            const points = shape.points
+              .map(denormalize)
+              .flatMap((pt) => [pt.x, pt.y]);
+            const isActive = layer.id === selectedLayerId && shape.id === selectedShapeId;
             return (
-              <Circle
+              <Line
                 key={shape.id}
-                x={center.x}
-                y={center.y}
-                radius={radius}
+                points={points}
+                closed={shape.closed}
                 stroke={shape.color}
-                strokeWidth={isActive ? 6 : 4}
-                dash={layer.locked ? [10, 4] : undefined}
+                strokeWidth={isActive ? 6 / stageScale : 4 / stageScale}
+                fill={`${shape.color}22`}
                 opacity={layer.locked ? 0.6 : 1}
+                dash={layer.locked ? [12, 6] : undefined}
                 draggable={tool === 'select' && !layer.locked}
                 onClick={(e) => {
                   e.cancelBubble = true;
-                  setSelected({ layerId: layer.id, shapeId: shape.id });
+                  onSelect(layer.id, shape.id);
                 }}
                 onTap={(e) => {
                   e.cancelBubble = true;
-                  setSelected({ layerId: layer.id, shapeId: shape.id });
+                  onSelect(layer.id, shape.id);
                 }}
-                onDragMove={(e) => {
-                  if (tool !== 'select') return;
-                  const position = {
-                    x: e.target.x(),
-                    y: e.target.y(),
-                  };
-                  const updated: AnnotationCircle = {
+                onDragEnd={(e) => {
+                  if (tool !== 'select' || layer.locked) return;
+                  const node = e.target as Konva.Line;
+                  const dx = node.x();
+                  const dy = node.y();
+                  const newPoints = [] as NormalizedPoint[];
+                  for (let i = 0; i < shape.points.length; i += 1) {
+                    const original = denormalize(shape.points[i]);
+                    const moved = clampToImage({ x: original.x + dx, y: original.y + dy });
+                    newPoints.push(normalize(moved));
+                  }
+                  node.x(0);
+                  node.y(0);
+                  const updated: AnnotationShape = {
                     ...shape,
-                    center: normalize(position),
-                    updated_at: new Date().toISOString(),
-                  };
-                  onUpdateShape(layer.id, updated);
-                }}
-                onTransformEnd={(e) => {
-                  const node = e.target as Konva.Circle;
-                  const scaleX = node.scaleX();
-                  node.scaleX(1);
-                  node.scaleY(1);
-                  const updated: AnnotationCircle = {
-                    ...shape,
-                    radius: (node.radius() * scaleX) / imageSize.w,
+                    points: newPoints,
                     updated_at: new Date().toISOString(),
                   };
                   onUpdateShape(layer.id, updated);
@@ -249,45 +337,47 @@ const CanvasStage = ({
           })}
         </KonvaLayer>
       ));
-  };
 
   return (
-    <Stage
-      ref={stageRef}
-      width={size.width}
-      height={size.height}
-      scaleX={stageScale}
-      scaleY={stageScale}
-      x={stagePosition.x}
-      y={stagePosition.y}
-      draggable={tool === 'pan'}
-      onDragEnd={(e) => {
-        setStagePosition({ x: e.target.x(), y: e.target.y() });
-      }}
-      onPointerDown={handlePointerDown}
-      onPointerMove={handlePointerMove}
-      onPointerUp={handlePointerUp}
-      style={{ touchAction: 'none', background: '#000' }}
-    >
-      <KonvaLayer listening={false}>
-        {imageNode && <KonvaImage image={imageNode} width={imageSize.w} height={imageSize.h} />}
-        {draftCircle && (
-          <Circle
-            x={draftCircle.start.x}
-            y={draftCircle.start.y}
-            radius={Math.sqrt(
-              Math.pow(draftCircle.current.x - draftCircle.start.x, 2) +
-                Math.pow(draftCircle.current.y - draftCircle.start.y, 2)
-            )}
-            stroke={drawingColor}
-            strokeWidth={3 / stageScale}
-            dash={[8, 4]}
-          />
-        )}
-      </KonvaLayer>
-      {renderLayers()}
-    </Stage>
+    <div className="stage-wrapper" ref={wrapperRef}>
+      <Stage
+        ref={stageRef}
+        width={imageSize.w}
+        height={imageSize.h}
+        scaleX={stageScale}
+        scaleY={stageScale}
+        x={stagePosition.x}
+        y={stagePosition.y}
+        draggable={tool === 'pan' || isGesturePan}
+        onDragEnd={(e) => {
+          setStagePosition({ x: e.target.x(), y: e.target.y() });
+        }}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerCancel}
+        style={{ touchAction: 'none', background: '#000' }}
+      >
+        <KonvaLayer listening={false}>
+          {imageNode && <KonvaImage image={imageNode} width={imageSize.w} height={imageSize.h} />}
+          {draftPath && (
+            <Line
+              points={draftPath.points.flatMap((pt) => [pt.x, pt.y])}
+              stroke={drawingColor}
+              strokeWidth={3 / stageScale}
+              dash={[10, 6]}
+              closed={false}
+            />
+          )}
+        </KonvaLayer>
+        {renderLayers()}
+      </Stage>
+    </div>
   );
 };
 
 export default CanvasStage;
+
+const MIN_POINT_DISTANCE = 4;
+const CLOSE_THRESHOLD = 32;
+const MIN_POLYGON_AREA = 0.0002;

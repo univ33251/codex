@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import fs from 'fs';
+import mime from 'mime-types';
 import { AnnotationService } from '../services/annotationService';
 
 export const createImageRouter = (service: AnnotationService) => {
@@ -24,6 +25,7 @@ export const createImageRouter = (service: AnnotationService) => {
       const stream = fs.createReadStream(filePath);
       const stat = await fs.promises.stat(filePath);
       const range = req.headers.range;
+      const contentType = mime.lookup(filePath) || 'application/octet-stream';
       if (range) {
         const [startStr, endStr] = range.replace(/bytes=/, '').split('-');
         const start = Number(startStr);
@@ -33,13 +35,13 @@ export const createImageRouter = (service: AnnotationService) => {
           'Content-Range': `bytes ${start}-${end}/${stat.size}`,
           'Accept-Ranges': 'bytes',
           'Content-Length': end - start + 1,
-          'Content-Type': 'image/jpeg',
+          'Content-Type': contentType,
         });
         fs.createReadStream(filePath, { start, end }).pipe(res);
       } else {
         res.set({
           'Content-Length': stat.size,
-          'Content-Type': 'image/jpeg',
+          'Content-Type': contentType,
           'Cache-Control': 'private, max-age=60',
         });
         stream.pipe(res);

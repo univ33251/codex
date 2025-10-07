@@ -1,20 +1,27 @@
-export type AnnotationCircle = {
+export type NormalizedPoint = {
+  x: number;
+  y: number;
+};
+
+export type AnnotationFreehand = {
   id: string;
-  type: 'circle';
-  center: { x: number; y: number };
-  radius: number;
+  type: 'freehand';
+  points: NormalizedPoint[];
   color: string;
   label: string | null;
   created_at: string;
   updated_at: string;
+  closed: boolean;
 };
+
+export type AnnotationShape = AnnotationFreehand;
 
 export type AnnotationLayer = {
   id: string;
   name: string;
   visible: boolean;
   z: number;
-  shapes: AnnotationCircle[];
+  shapes: AnnotationShape[];
   locked?: boolean;
 };
 

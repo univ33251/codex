@@ -21,7 +21,16 @@ export interface FsAdapterOptions {
   imageRoot: string;
   annotationRoot: string;
   readOnly?: boolean;
+  imageExtensions?: string[];
 }
+
+const DEFAULT_IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.webp', '.tif', '.tiff', '.bmp'];
+
+const normalizeExtension = (value: string) => {
+  const trimmed = value.trim().toLowerCase();
+  if (!trimmed) return null;
+  return trimmed.startsWith('.') ? trimmed : `.${trimmed}`;
+};
 
 async function readImageMetadata(filePath: string): Promise<{ width: number; height: number }> {
   const buffer = await fs.readFile(filePath);
@@ -37,7 +46,16 @@ async function readImageMetadata(filePath: string): Promise<{ width: number; hei
   }
 }
 
-export const createFsAdapter = ({ imageRoot, annotationRoot, readOnly }: FsAdapterOptions): StorageAdapter => {
+export const createFsAdapter = ({ imageRoot, annotationRoot, readOnly, imageExtensions }: FsAdapterOptions): StorageAdapter => {
+  const allowedExtensions = new Set(
+    (imageExtensions && imageExtensions.length > 0
+      ? imageExtensions
+      : DEFAULT_IMAGE_EXTENSIONS
+    )
+      .map(normalizeExtension)
+      .filter((ext): ext is string => Boolean(ext))
+  );
+
   const resolveImagePath = (id: string) => path.join(imageRoot, id);
   const resolveAnnotationPath = (id: string) => path.join(annotationRoot, `${id}.json`);
 
@@ -45,27 +63,67 @@ export const createFsAdapter = ({ imageRoot, annotationRoot, readOnly }: FsAdapt
     await fs.mkdir(dir, { recursive: true });
   };
 
+  const collectImageCandidates = async () => {
+    const results: string[] = [];
+    const queue: { absPath: string; relPath: string }[] = [{ absPath: imageRoot, relPath: '' }];
+    while (queue.length > 0) {
+      const { absPath, relPath } = queue.shift()!;
+      const entries = await fs.readdir(absPath, { withFileTypes: true });
+      for (const entry of entries) {
+        const entryRelPath = relPath ? path.join(relPath, entry.name) : entry.name;
+        const entryAbsPath = path.join(absPath, entry.name);
+        if (entry.isDirectory()) {
+          queue.push({ absPath: entryAbsPath, relPath: entryRelPath });
+          continue;
+        }
+        if (!entry.isFile()) {
+          continue;
+        }
+        const ext = path.extname(entry.name).toLowerCase();
+        if (allowedExtensions.size && !allowedExtensions.has(ext)) {
+          continue;
+        }
+        results.push(entryRelPath);
+      }
+    }
+    return results.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  };
+
   return {
     async ensureReady() {
-      await ensureDir(imageRoot);
+      try {
+        const stat = await fs.stat(imageRoot);
+        if (!stat.isDirectory()) {
+          throw new Error(`IMAGE_ROOT must point to a directory: ${imageRoot}`);
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+          throw new Error(`IMAGE_ROOT does not exist: ${imageRoot}`);
+        }
+        throw error;
+      }
       await ensureDir(annotationRoot);
     },
     async listImages(cursor = '', limit = 50) {
-      const files = await fs.readdir(imageRoot);
-      const sorted = files.sort();
+      const files = await collectImageCandidates();
+      if (files.length === 0) {
+        return { items: [], nextCursor: undefined };
+      }
       let startIndex = 0;
       if (cursor) {
-        const idx = sorted.indexOf(cursor);
+        const idx = files.indexOf(cursor);
         startIndex = idx >= 0 ? idx + 1 : 0;
       }
-      const slice = sorted.slice(startIndex, startIndex + limit);
+      const slice = files.slice(startIndex, startIndex + limit);
       const items: StorageImage[] = [];
-      for (const file of slice) {
-        const filePath = resolveImagePath(file);
-        const stat = await fs.stat(filePath);
-        if (!stat.isFile()) continue;
-        const { width, height } = await readImageMetadata(filePath);
-        items.push({ id: file, name: file, width, height, path: filePath });
+      for (const relativePath of slice) {
+        const filePath = resolveImagePath(relativePath);
+        try {
+          const { width, height } = await readImageMetadata(filePath);
+          items.push({ id: relativePath, name: path.basename(relativePath), width, height, path: filePath });
+        } catch (error) {
+          console.warn(`Skipping unreadable image: ${filePath}`, error);
+        }
       }
       const nextCursor = slice.length === limit ? slice[slice.length - 1] : undefined;
       return { items, nextCursor };
