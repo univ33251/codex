@@ -171,6 +171,13 @@ function App() {
     };
   }, []);
 
+  useEffect(() => {
+    // 一覧はあるのにdocumentがまだ無い場合の保険
+    if (!store.document && store.images.length > 0) {
+      void loadDocumentForIndex(store.currentImageIndex || 0);
+    }
+  }, [store.images]);
+
   const showToast = (message: string) => {
     setToast(message);
     if (toastTimer.current) {
@@ -194,7 +201,12 @@ function App() {
       await prefetchImage(image.id);
     } catch (err) {
       console.error(err);
-      setError('アノテーションデータの読み込みに失敗しました');
+      // フォールバック: 注釈が読めなくても空ドキュメントで開く
+      store.setCurrentImageIndex(index);
+      const doc = defaultDocument(image);
+      store.setDocument(doc);
+      store.selectShape(doc.layers[0]?.id ?? null, null);
+      store.markDirty(false);
     } finally {
       setLoading(false);
     }
@@ -219,7 +231,7 @@ function App() {
   const prefetchImage = async (imageId: string) => {
     try {
       const img = new Image();
-      img.src = `/api/images/${imageId}`;
+      img.src = `/api/images/${encodeURIComponent(imageId)}`;
       await img.decode().catch(() => undefined);
     } catch (err) {
       console.warn('prefetch failed', err);
