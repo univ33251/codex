@@ -83,10 +83,7 @@ const CanvasStage = ({
 
   useEffect(() => {
     if (!containerSize.width || !containerSize.height) return;
-    const scale = Math.min(
-      containerSize.width / imageSize.w,
-      containerSize.height / imageSize.h
-    );
+    const scale = 1;
     setStageScale(scale);
     setStagePosition(
       clampStagePosition(
