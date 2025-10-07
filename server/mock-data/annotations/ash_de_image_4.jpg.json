@@ -1,0 +1,75 @@
+{
+  "image_id": "ash_de_image_4.jpg",
+  "image_size": {
+    "w": 256,
+    "h": 256
+  },
+  "layers": [
+    {
+      "id": "layer-1759791783982",
+      "name": "default",
+      "visible": true,
+      "z": 1,
+      "shapes": [
+        {
+          "id": "ann-1759791785533",
+          "type": "circle",
+          "center": {
+            "x": 0.8046875,
+            "y": 0.703125
+          },
+          "radius": 0.849598150069527,
+          "color": "#34C759",
+          "label": null,
+          "created_at": "2025-10-06T23:03:05.533Z",
+          "updated_at": "2025-10-06T23:03:05.533Z"
+        },
+        {
+          "id": "ann-1759791801471",
+          "type": "circle",
+          "center": {
+            "x": 0.359375,
+            "y": 0.5859375
+          },
+          "radius": 0.5016148239841253,
+          "color": "#007AFF",
+          "label": null,
+          "created_at": "2025-10-06T23:03:21.471Z",
+          "updated_at": "2025-10-06T23:03:21.471Z"
+        }
+      ]
+    },
+    {
+      "id": "layer-1759791793528",
+      "name": "Layer 2",
+      "visible": true,
+      "z": 2,
+      "shapes": [
+        {
+          "id": "ann-1759791799668",
+          "type": "circle",
+          "center": {
+            "x": 0.546875,
+            "y": 0.16796875
+          },
+          "radius": 0.291611439153735,
+          "color": "#FF9500",
+          "label": null,
+          "created_at": "2025-10-06T23:03:19.668Z",
+          "updated_at": "2025-10-06T23:03:19.668Z"
+        }
+      ]
+    },
+    {
+      "id": "layer-1759791794171",
+      "name": "Layer 3",
+      "visible": true,
+      "z": 3,
+      "shapes": []
+    }
+  ],
+  "meta": {
+    "device": "iPadOS",
+    "revision": 1
+  }
+}
