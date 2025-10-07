@@ -106,7 +106,7 @@ const CanvasStage = ({
   useEffect(() => {
     const img = new window.Image();
     img.crossOrigin = 'anonymous';
-    img.src = `/api/images/${imageId}`;
+    img.src = `/api/images/${encodeURIComponent(imageId)}`;
     img.onload = () => setImageNode(img);
   }, [imageId]);
 
