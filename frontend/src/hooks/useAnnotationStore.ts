@@ -15,7 +15,7 @@ const cloneDocument = (doc: AnnotationDocument): AnnotationDocument => {
   return JSON.parse(JSON.stringify(doc));
 };
 
-export type ToolMode = 'draw' | 'select' | 'pan';
+export type ToolMode = 'draw' | 'select' | 'pan' | 'erase';
 
 export interface AnnotationState {
   document: AnnotationDocument | null;

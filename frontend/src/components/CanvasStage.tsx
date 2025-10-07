@@ -44,7 +44,10 @@ const CanvasStage = ({
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
   const [imageNode, setImageNode] = useState<HTMLImageElement | null>(null);
   const [draftPath, setDraftPath] = useState<{ points: { x: number; y: number }[] } | null>(null);
-  const [isGesturePan, setIsGesturePan] = useState(false);
+  const stageScaleRef = useRef(stageScale);
+  const stagePositionRef = useRef(stagePosition);
+  const pinchDistanceRef = useRef<number | null>(null);
+  const pinchCenterRef = useRef<{ x: number; y: number } | null>(null);
 
   useEffect(() => {
     if (!wrapperRef.current) return;
@@ -84,21 +87,30 @@ const CanvasStage = ({
   useEffect(() => {
     if (!containerSize.width || !containerSize.height) return;
     const scale = 1;
-    setStageScale(scale);
-    setStagePosition(
-      clampStagePosition(
-        {
-          x: (containerSize.width - imageSize.w * scale) / 2,
-          y: (containerSize.height - imageSize.h * scale) / 2,
-        },
-        scale
-      )
+    const nextPosition = clampStagePosition(
+      {
+        x: (containerSize.width - imageSize.w * scale) / 2,
+        y: (containerSize.height - imageSize.h * scale) / 2,
+      },
+      scale
     );
+    setStageScale(scale);
+    setStagePosition(nextPosition);
+    stageScaleRef.current = scale;
+    stagePositionRef.current = nextPosition;
   }, [clampStagePosition, containerSize.height, containerSize.width, imageSize.h, imageSize.w, resetViewportKey]);
 
   useEffect(() => {
     setStagePosition((prev) => clampStagePosition(prev));
   }, [clampStagePosition, stageScale]);
+
+  useEffect(() => {
+    stageScaleRef.current = stageScale;
+  }, [stageScale]);
+
+  useEffect(() => {
+    stagePositionRef.current = stagePosition;
+  }, [stagePosition]);
 
   useEffect(() => {
     const img = new window.Image();
@@ -111,40 +123,51 @@ const CanvasStage = ({
     setDraftPath(null);
   }, [imageId]);
 
+  const applyZoom = useCallback(
+    (pointer: { x: number; y: number }, scale: number) => {
+      const nextScale = clampScale(scale);
+      const stagePos = stagePositionRef.current;
+      const oldScale = stageScaleRef.current;
+      const focus = {
+        x: (pointer.x - stagePos.x) / oldScale,
+        y: (pointer.y - stagePos.y) / oldScale,
+      };
+      const newPos = {
+        x: pointer.x - focus.x * nextScale,
+        y: pointer.y - focus.y * nextScale,
+      };
+      const clampedPos = clampStagePosition(newPos, nextScale);
+      setStageScale(nextScale);
+      setStagePosition(clampedPos);
+      stageScaleRef.current = nextScale;
+      stagePositionRef.current = clampedPos;
+    },
+    [clampStagePosition]
+  );
+
   const handleWheel = useCallback(
     (e: Konva.KonvaEventObject<WheelEvent>) => {
       e.evt.preventDefault();
       const stage = stageRef.current;
       if (!stage) return;
-      const oldScale = stageScale;
       const pointer = stage.getPointerPosition();
       if (!pointer) return;
-      const scaleBy = 1.05;
-      const direction = e.evt.deltaY > 0 ? -1 : 1;
-      const newScale = direction > 0 ? oldScale * scaleBy : oldScale / scaleBy;
-      const nextScale = Math.max(0.05, Math.min(newScale, 8));
-      const mousePointTo = {
-        x: (pointer.x - stage.x()) / oldScale,
-        y: (pointer.y - stage.y()) / oldScale,
-      };
-      setStageScale(nextScale);
-      const newPos = {
-        x: pointer.x - mousePointTo.x * nextScale,
-        y: pointer.y - mousePointTo.y * nextScale,
-      };
-      setStagePosition(clampStagePosition(newPos, nextScale));
+      const direction = e.evt.deltaY > 0 ? 1 : -1;
+      const factor = direction > 0 ? 1 / WHEEL_SCALE_STEP : WHEEL_SCALE_STEP;
+      const targetScale = stageScaleRef.current * factor;
+      applyZoom(pointer, targetScale);
     },
-    [clampStagePosition, stageScale]
+    [applyZoom]
   );
 
-  useEffect(() => {
-    const stage = stageRef.current;
-    if (!stage) return;
-    stage.on('wheel', handleWheel as any);
-    return () => {
-      stage.off('wheel', handleWheel as any);
-    };
-  }, [handleWheel]);
+  const handleDragMove = useCallback(
+    (e: Konva.KonvaEventObject<DragEvent>) => {
+      const nextPos = clampStagePosition({ x: e.target.x(), y: e.target.y() });
+      setStagePosition(nextPos);
+      stagePositionRef.current = nextPos;
+    },
+    [clampStagePosition]
+  );
 
   const normalize = useCallback(
     (point: { x: number; y: number }): NormalizedPoint => ({
@@ -188,9 +211,7 @@ const CanvasStage = ({
 
   const handlePointerDown = (evt: Konva.KonvaEventObject<PointerEvent>) => {
     evt.evt.preventDefault();
-    const pointerType = evt.evt.pointerType;
-    if (pointerType === 'touch' && evt.evt.touches && evt.evt.touches.length > 1) {
-      setIsGesturePan(true);
+    if ('touches' in evt.evt && evt.evt.touches && evt.evt.touches.length > 1) {
       return;
     }
     const stage = stageRef.current;
@@ -215,6 +236,9 @@ const CanvasStage = ({
 
   const handlePointerMove = (evt: Konva.KonvaEventObject<PointerEvent>) => {
     if (!draftPath) return;
+    if ('touches' in evt.evt && evt.evt.touches && evt.evt.touches.length > 1) {
+      return;
+    }
     const stage = stageRef.current;
     const pointer = stage?.getPointerPosition();
     if (!pointer) return;
@@ -285,14 +309,68 @@ const CanvasStage = ({
   };
 
   const handlePointerUp = () => {
-    setIsGesturePan(false);
+    pinchDistanceRef.current = null;
+    pinchCenterRef.current = null;
     finalizeDraft();
   };
 
   const handlePointerCancel = () => {
-    setIsGesturePan(false);
+    pinchDistanceRef.current = null;
+    pinchCenterRef.current = null;
     setDraftPath(null);
   };
+
+  const handleTouchStart = useCallback((evt: Konva.KonvaEventObject<TouchEvent>) => {
+    if (evt.evt.touches.length === 2) {
+      pinchDistanceRef.current = distanceBetweenTouches(evt.evt.touches[0], evt.evt.touches[1]);
+      pinchCenterRef.current = centerOfTouches(evt.evt.touches[0], evt.evt.touches[1]);
+    }
+  }, []);
+
+  const handleTouchMove = useCallback(
+    (evt: Konva.KonvaEventObject<TouchEvent>) => {
+      const stage = stageRef.current;
+      if (!stage) return;
+      if (evt.evt.touches.length !== 2) return;
+      evt.evt.preventDefault();
+      const [touch1, touch2] = [evt.evt.touches[0], evt.evt.touches[1]];
+      const distance = distanceBetweenTouches(touch1, touch2);
+      const center = centerOfTouches(touch1, touch2);
+      const containerRect = stage.container().getBoundingClientRect();
+      const pointer = {
+        x: center.x - containerRect.left,
+        y: center.y - containerRect.top,
+      };
+      if (pinchDistanceRef.current) {
+        const scaleBy = distance / pinchDistanceRef.current;
+        const targetScale = stageScaleRef.current * scaleBy;
+        applyZoom(pointer, targetScale);
+      }
+      if (pinchCenterRef.current) {
+        const dx = center.x - pinchCenterRef.current.x;
+        const dy = center.y - pinchCenterRef.current.y;
+        if (Math.abs(dx) > 0 || Math.abs(dy) > 0) {
+          const nextPos = clampStagePosition(
+            {
+              x: stagePositionRef.current.x + dx,
+              y: stagePositionRef.current.y + dy,
+            },
+            stageScaleRef.current
+          );
+          setStagePosition(nextPos);
+          stagePositionRef.current = nextPos;
+        }
+      }
+      pinchDistanceRef.current = distance;
+      pinchCenterRef.current = center;
+    },
+    [applyZoom, clampStagePosition]
+  );
+
+  const handleTouchEnd = useCallback(() => {
+    pinchDistanceRef.current = null;
+    pinchCenterRef.current = null;
+  }, []);
 
   const handleDeleteSelected = useCallback(() => {
     if (!selectedLayerId || !selectedShapeId) return;
@@ -335,13 +413,20 @@ const CanvasStage = ({
                 opacity={layer.locked ? 0.6 : 1}
                 dash={layer.locked ? [12, 6] : undefined}
                 draggable={tool === 'select' && !layer.locked}
-                onClick={(e) => {
-                  e.cancelBubble = true;
-                  onSelect(layer.id, shape.id);
-                }}
-                onTap={(e) => {
-                  e.cancelBubble = true;
-                  onSelect(layer.id, shape.id);
+                onPointerDown={(e) => {
+                  if (tool === 'erase') {
+                    e.cancelBubble = true;
+                    if (layer.locked) {
+                      onShapeRejected?.('ロックされたレイヤーの図形は削除できません');
+                      return;
+                    }
+                    onDeleteShape(layer.id, shape.id);
+                    return;
+                  }
+                  if (tool === 'select') {
+                    e.cancelBubble = true;
+                    onSelect(layer.id, shape.id);
+                  }
                 }}
                 onDragEnd={(e) => {
                   if (tool !== 'select' || layer.locked) return;
@@ -364,6 +449,7 @@ const CanvasStage = ({
                   onUpdateShape(layer.id, updated);
                 }}
                 listening={tool !== 'pan'}
+                hitStrokeWidth={Math.max(TOUCH_HIT_STROKE / stageScale, 12)}
               />
             );
           })}
@@ -384,15 +470,22 @@ const CanvasStage = ({
         scaleY={stageScale}
         x={stagePosition.x}
         y={stagePosition.y}
-        draggable={tool === 'pan' || isGesturePan}
+        draggable={tool === 'pan'}
         dragBoundFunc={(pos) => clampStagePosition(pos)}
+        onDragMove={handleDragMove}
         onDragEnd={(e) => {
-          setStagePosition(clampStagePosition({ x: e.target.x(), y: e.target.y() }));
+          const nextPos = clampStagePosition({ x: e.target.x(), y: e.target.y() });
+          setStagePosition(nextPos);
+          stagePositionRef.current = nextPos;
         }}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerCancel}
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
+        onWheel={handleWheel}
         style={{ touchAction: 'none', background: '#000' }}
       >
         <KonvaLayer listening={false}>
@@ -418,3 +511,16 @@ export default CanvasStage;
 const MIN_POINT_DISTANCE = 4;
 const CLOSE_THRESHOLD = 32;
 const MIN_POLYGON_AREA = 0.0002;
+const MIN_STAGE_SCALE = 0.05;
+const MAX_STAGE_SCALE = 8;
+const WHEEL_SCALE_STEP = 1.05;
+const TOUCH_HIT_STROKE = 36;
+
+const clampScale = (value: number) => Math.max(MIN_STAGE_SCALE, Math.min(value, MAX_STAGE_SCALE));
+
+const distanceBetweenTouches = (a: Touch, b: Touch) => Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+
+const centerOfTouches = (a: Touch, b: Touch) => ({
+  x: (a.clientX + b.clientX) / 2,
+  y: (a.clientY + b.clientY) / 2,
+});

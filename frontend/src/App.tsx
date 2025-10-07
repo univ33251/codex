@@ -122,6 +122,14 @@ function App() {
   const [infoPanelOpen, setInfoPanelOpen] = useState(true);
   const [resetViewportKey, setResetViewportKey] = useState(0);
 
+  const deleteSelectedShape = () => {
+    if (!store.selectedLayerId || !store.selectedShapeId) {
+      return;
+    }
+    store.deleteShape(store.selectedLayerId, store.selectedShapeId);
+    showToast('図形を削除しました');
+  };
+
   useEffect(() => {
     let mounted = true;
     const fetchImages = async () => {
@@ -357,6 +365,12 @@ function App() {
             >
               パン
             </button>
+            <button
+              className={`control-button ${store.tool === 'erase' ? 'active' : ''}`}
+              onClick={() => store.setTool('erase')}
+            >
+              消しゴム
+            </button>
           </div>
           <div className="toolbar-group">
             <button className="control-button" onClick={() => store.undo()} disabled={!store.canUndo}>
@@ -364,6 +378,13 @@ function App() {
             </button>
             <button className="control-button" onClick={() => store.redo()} disabled={!store.canRedo}>
               Redo
+            </button>
+            <button
+              className="control-button"
+              onClick={deleteSelectedShape}
+              disabled={!store.selectedLayerId || !store.selectedShapeId}
+            >
+              選択削除
             </button>
             <button className="control-button" onClick={() => setResetViewportKey((v) => v + 1)}>
               ズームリセット
