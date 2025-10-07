@@ -58,6 +58,29 @@ const CanvasStage = ({
     return () => observer.disconnect();
   }, []);
 
+  const clampStagePosition = useCallback(
+    (pos: { x: number; y: number }, scale = stageScale) => {
+      if (!containerSize.width || !containerSize.height) {
+        return pos;
+      }
+      const scaledWidth = imageSize.w * scale;
+      const scaledHeight = imageSize.h * scale;
+
+      const availableX = containerSize.width - scaledWidth;
+      const availableY = containerSize.height - scaledHeight;
+
+      const x = availableX >= 0
+        ? availableX / 2
+        : Math.min(0, Math.max(availableX, pos.x));
+      const y = availableY >= 0
+        ? availableY / 2
+        : Math.min(0, Math.max(availableY, pos.y));
+
+      return { x, y };
+    },
+    [containerSize.width, containerSize.height, imageSize.w, imageSize.h, stageScale]
+  );
+
   useEffect(() => {
     if (!containerSize.width || !containerSize.height) return;
     const scale = Math.min(
@@ -65,11 +88,20 @@ const CanvasStage = ({
       containerSize.height / imageSize.h
     );
     setStageScale(scale);
-    setStagePosition({
-      x: (containerSize.width - imageSize.w * scale) / 2,
-      y: (containerSize.height - imageSize.h * scale) / 2,
-    });
-  }, [containerSize, imageSize, resetViewportKey]);
+    setStagePosition(
+      clampStagePosition(
+        {
+          x: (containerSize.width - imageSize.w * scale) / 2,
+          y: (containerSize.height - imageSize.h * scale) / 2,
+        },
+        scale
+      )
+    );
+  }, [clampStagePosition, containerSize.height, containerSize.width, imageSize.h, imageSize.w, resetViewportKey]);
+
+  useEffect(() => {
+    setStagePosition((prev) => clampStagePosition(prev));
+  }, [clampStagePosition, stageScale]);
 
   useEffect(() => {
     const img = new window.Image();
@@ -82,28 +114,31 @@ const CanvasStage = ({
     setDraftPath(null);
   }, [imageId]);
 
-  const handleWheel = useCallback((e: Konva.KonvaEventObject<WheelEvent>) => {
-    e.evt.preventDefault();
-    const stage = stageRef.current;
-    if (!stage) return;
-    const oldScale = stageScale;
-    const pointer = stage.getPointerPosition();
-    if (!pointer) return;
-    const scaleBy = 1.05;
-    const direction = e.evt.deltaY > 0 ? -1 : 1;
-    const newScale = direction > 0 ? oldScale * scaleBy : oldScale / scaleBy;
-    const mousePointTo = {
-      x: (pointer.x - stage.x()) / oldScale,
-      y: (pointer.y - stage.y()) / oldScale,
-    };
-    const nextScale = Math.max(0.05, Math.min(newScale, 8));
-    setStageScale(nextScale);
-    const newPos = {
-      x: pointer.x - mousePointTo.x * nextScale,
-      y: pointer.y - mousePointTo.y * nextScale,
-    };
-    setStagePosition(newPos);
-  }, [stageScale]);
+  const handleWheel = useCallback(
+    (e: Konva.KonvaEventObject<WheelEvent>) => {
+      e.evt.preventDefault();
+      const stage = stageRef.current;
+      if (!stage) return;
+      const oldScale = stageScale;
+      const pointer = stage.getPointerPosition();
+      if (!pointer) return;
+      const scaleBy = 1.05;
+      const direction = e.evt.deltaY > 0 ? -1 : 1;
+      const newScale = direction > 0 ? oldScale * scaleBy : oldScale / scaleBy;
+      const nextScale = Math.max(0.05, Math.min(newScale, 8));
+      const mousePointTo = {
+        x: (pointer.x - stage.x()) / oldScale,
+        y: (pointer.y - stage.y()) / oldScale,
+      };
+      setStageScale(nextScale);
+      const newPos = {
+        x: pointer.x - mousePointTo.x * nextScale,
+        y: pointer.y - mousePointTo.y * nextScale,
+      };
+      setStagePosition(clampStagePosition(newPos, nextScale));
+    },
+    [clampStagePosition, stageScale]
+  );
 
   useEffect(() => {
     const stage = stageRef.current;
@@ -338,19 +373,24 @@ const CanvasStage = ({
         </KonvaLayer>
       ));
 
+  if (!containerSize.width || !containerSize.height) {
+    return <div className="stage-wrapper" ref={wrapperRef} />;
+  }
+
   return (
     <div className="stage-wrapper" ref={wrapperRef}>
       <Stage
         ref={stageRef}
-        width={imageSize.w}
-        height={imageSize.h}
+        width={containerSize.width}
+        height={containerSize.height}
         scaleX={stageScale}
         scaleY={stageScale}
         x={stagePosition.x}
         y={stagePosition.y}
         draggable={tool === 'pan' || isGesturePan}
+        dragBoundFunc={(pos) => clampStagePosition(pos)}
         onDragEnd={(e) => {
-          setStagePosition({ x: e.target.x(), y: e.target.y() });
+          setStagePosition(clampStagePosition({ x: e.target.x(), y: e.target.y() }));
         }}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
